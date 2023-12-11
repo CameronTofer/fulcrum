@@ -6,18 +6,19 @@ import (
 )
 
 
-//go:generate git submodule init
-//go:generate git submodule update
+
+//go:generate git submodule update --init --recursive
 //!!git checkout 5f6e0c0dff1e7a89331e6b25eca9a9fd71324069
 //go:generate mkdir -p llama.cpp/build
 //go:generate cmake -DLLAMA_STATIC=Off -DBUILD_SHARED_LIBS=ON -S llama.cpp -B llama.cpp/build
 //go:generate cmake --build llama.cpp/build --config Release
 //go:generate cp llama.cpp/build/libllama.dylib .
 //go:generate cp llama.cpp/ggml-metal.metal .
+//go:generate MACOSX_DEPLOYMENT_TARGET=14.1 cd LuaJIT && make -j
 
 /*
-#cgo CFLAGS: -I/usr/local/include/luajit-2.1
-#cgo LDFLAGS: -L/usr/local/lib -lluajit-5.1 -ldl -lm
+#cgo CFLAGS: -ILuaJIT/src
+#cgo LDFLAGS: -LLuaJIT/src -lluajit -ldl -lm
 #include <luajit.h>
 #include <lua.h>
 #include <lauxlib.h>
