@@ -14,7 +14,7 @@ import (
 //go:generate cmake --build llama.cpp/build --config Release
 //go:generate cp llama.cpp/build/libllama.dylib .
 //go:generate cp llama.cpp/ggml-metal.metal .
-//go:generate make -C LuaJIT -j MACOSX_DEPLOYMENT_TARGET=14.1
+//go:generate make -C LuaJIT -j16 BUILDMODE=static MACOSX_DEPLOYMENT_TARGET=14.1
 //go:generate make -C LuaJIT install PREFIX=$(PWD)/deps/luajit
 
 /*
