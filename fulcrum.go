@@ -3,9 +3,8 @@ package main
 import (
 	_ "embed"
 	"fmt"
+	"os"
 )
-
-
 
 //go:generate git submodule update --init --recursive
 //!!git checkout 5f6e0c0dff1e7a89331e6b25eca9a9fd71324069
@@ -86,10 +85,10 @@ func servellm(L *C.lua_State, filename string) func(string) string {
 			}
 		}
 	}()
-	
+
 	return func(prompt string) string {
 		c <- prompt
-		return <- c
+		return <-c
 	}
 }
 
@@ -99,11 +98,16 @@ func main() {
 	defer C.lua_close(L)
 	C.luaL_openlibs(L)
 
-	chat := servellm(L, "/Users/cameron/.ollama/models/blobs/sha256:6504ba23a37160de70db611212815c9aab171864d206b8c013b72fd0b16e19eb")
+	filename := "/Users/cameron/.ollama/models/blobs/sha256:6504ba23a37160de70db611212815c9aab171864d206b8c013b72fd0b16e19eb"
 
+	if len(os.Args) > 1 {
+		filename = os.Args[1]
+	}
+
+	chat := servellm(L, filename)
 
 	fmt.Println("How do you cook an egg?\n", chat("How do you cook an egg?"), "===")
 
 	//fmt.Println("What do trains ride on?\n", chat("What do trains ride on?"), "===")
-	
+
 }
