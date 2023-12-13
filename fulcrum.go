@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
 	"sync"
 
 	"github.com/libp2p/go-libp2p"
@@ -23,64 +22,38 @@ import (
 
 var logger = log.Logger("rendezvous")
 
+type GenerateRequest struct {
+	Prompt	string  `json:"prompt"`
+}
+
+type GenerateResponse struct {
+	Response string `json:"response"`
+}
+
 func handleStream(stream network.Stream) {
-	logger.Info("Got a new stream!")
+	logger.Info("!!! Got a new stream !!!")
 
-	// Create a buffer stream for non-blocking read and write.
-	rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
-
-	go readData(rw)
-	go writeData(rw)
-
-	// 'stream' will stay open until you close it (or the other side closes it).
-}
-
-func readData(rw *bufio.ReadWriter) {
-	for {
-		str, err := rw.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading from buffer")
-			panic(err)
-		}
-
-		if str == "" {
-			return
-		}
-		if str != "\n" {
-			// Green console colour: 	\x1b[32m
-			// Reset console colour: 	\x1b[0m
-			fmt.Printf("\x1b[32m%s\x1b[0m> ", str)
-		}
-
+	var req GenerateRequest
+	if err := json.NewDecoder(stream).Decode(&req); err != nil {
+		logger.Error(err)
+		return
 	}
-}
 
-func writeData(rw *bufio.ReadWriter) {
-	stdReader := bufio.NewReader(os.Stdin)
+	logger.Info("Received request: ", req.Prompt)
 
-	for {
-		fmt.Print("> ")
-		sendData, err := stdReader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading from stdin")
-			panic(err)
-		}
+	var resp GenerateResponse
+	resp.Response = "Hello World!"
 
-		_, err = rw.WriteString(fmt.Sprintf("%s\n", sendData))
-		if err != nil {
-			fmt.Println("Error writing to buffer")
-			panic(err)
-		}
-		err = rw.Flush()
-		if err != nil {
-			fmt.Println("Error flushing buffer")
-			panic(err)
-		}
+	if err := json.NewEncoder(stream).Encode(resp); err != nil {
+		logger.Error(err)
+		return
 	}
+
 }
+
 
 func main() {
-	log.SetAllLoggers(log.LevelWarn)
+	//log.SetAllLoggers(log.LevelWarn)
 	log.SetLogLevel("rendezvous", "info")
 	help := flag.Bool("h", false, "Display Help")
 	config, err := ParseFlags()
@@ -168,13 +141,25 @@ func main() {
 		stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
 
 		if err != nil {
-			logger.Warning("Connection failed:", err)
+			//logger.Warning("Connection failed:", err)
 			continue
 		} else {
-			rw := bufio.NewReadWriter(bufio.NewReader(stream), bufio.NewWriter(stream))
 
-			go writeData(rw)
-			go readData(rw)
+			var req GenerateRequest
+			req.Prompt = "What is it?"
+			if err := json.NewEncoder(stream).Encode(req); err != nil {
+				logger.Error(err)
+				break
+			}
+
+			var resp GenerateResponse
+			if err := json.NewDecoder(stream).Decode(&resp); err != nil {
+				logger.Error(err)
+				break
+			}
+
+			logger.Info("Received response: ", resp.Response)
+
 		}
 
 		logger.Info("Connected to:", peer)
