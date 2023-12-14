@@ -4,6 +4,7 @@ go 1.21.4
 
 require (
 	github.com/ipfs/go-log/v2 v2.5.1
+	github.com/jmorganca/ollama v0.1.15
 	github.com/libp2p/go-libp2p v0.32.2
 	github.com/libp2p/go-libp2p-kad-dht v0.25.2
 	github.com/multiformats/go-multiaddr v0.12.0

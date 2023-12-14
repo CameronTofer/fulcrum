@@ -11,6 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/core/host"
 	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
 
@@ -18,37 +19,69 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"github.com/ipfs/go-log/v2"
+
+
+	"github.com/jmorganca/ollama/api"
 )
 
 var logger = log.Logger("rendezvous")
 
-type GenerateRequest struct {
-	Prompt	string  `json:"prompt"`
+type generateOptions struct {
+	Model    string
+	Prompt   string
+	Format   string
+	Options  map[string]interface{}
 }
 
-type GenerateResponse struct {
-	Response string `json:"response"`
-}
+func ConnectOllama( host host.Host, opts generateOptions ) {
 
-func handleStream(stream network.Stream) {
-	logger.Info("!!! Got a new stream !!!")
-
-	var req GenerateRequest
-	if err := json.NewDecoder(stream).Decode(&req); err != nil {
-		logger.Error(err)
-		return
+	// create a client to the locally running ollama server
+	ollama, err := api.ClientFromEnvironment()
+	if err != nil {
+		panic(err)
 	}
 
-	logger.Info("Received request: ", req.Prompt)
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var resp GenerateResponse
-	resp.Response = "Hello World!"
-
-	if err := json.NewEncoder(stream).Encode(resp); err != nil {
-		logger.Error(err)
-		return
+	// pull the model even if it exists
+	pr := api.PullRequest{Name: opts.Model}
+	if err := ollama.Pull(context.Background(), &pr, func(resp api.ProgressResponse) error {
+		fmt.Println("pulling...", resp.Completed, resp.Total)
+		return nil
+	}); err != nil {
+		panic(err)
 	}
 
+	// Set a function as stream handler. This function is called when a peer
+	// initiates a connection and starts a stream with this peer.
+	host.SetStreamHandler(protocol.ID("ollama/" + opts.Model), func (stream network.Stream) {
+		logger.Info("!!! Got a new stream !!!")
+	
+		// get the prompt request from peer
+		var request api.GenerateRequest
+		if err := json.NewDecoder(stream).Decode(&request); err != nil {
+			logger.Error(err)
+			return
+		}
+	
+		logger.Info("Received request: ", request.Prompt)
+
+		// generate an answer
+		if err := ollama.Generate(cancelCtx, &request, func(response api.GenerateResponse) error {
+
+			if err := json.NewEncoder(stream).Encode(response); err != nil {
+				logger.Error(err)
+				panic(err)
+			}
+	
+			return nil
+
+		}); err != nil {
+			panic(err)
+		}
+	
+	})
 }
 
 
@@ -78,9 +111,11 @@ func main() {
 	logger.Info("Host created. We are:", host.ID())
 	logger.Info(host.Addrs())
 
-	// Set a function as stream handler. This function is called when a peer
-	// initiates a connection and starts a stream with this peer.
-	host.SetStreamHandler(protocol.ID(config.ProtocolID), handleStream)
+	ConnectOllama(host, generateOptions{
+		Model: "orca2:13b",
+		Prompt: "What is it?",
+		Options: map[string]interface{}{},
+	})
 
 	// Start a DHT, for use in peer discovery. We can't just make a new DHT
 	// client because we want each peer to maintain its own local copy of the
@@ -118,7 +153,7 @@ func main() {
 
 	// We use a rendezvous point "meet me here" to announce our location.
 	// This is like telling your friends to meet you at the Eiffel Tower.
-	logger.Info("Announcing ourselves...")
+	logger.Info("Announcing ourselves...", config.RendezvousString)
 	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
 	dutil.Advertise(ctx, routingDiscovery, config.RendezvousString)
 	logger.Debug("Successfully announced!")
@@ -145,20 +180,20 @@ func main() {
 			continue
 		} else {
 
-			var req GenerateRequest
-			req.Prompt = "What is it?"
-			if err := json.NewEncoder(stream).Encode(req); err != nil {
+			var request api.GenerateRequest
+			request.Prompt = "What is it?"
+			if err := json.NewEncoder(stream).Encode(request); err != nil {
 				logger.Error(err)
 				break
 			}
 
-			var resp GenerateResponse
-			if err := json.NewDecoder(stream).Decode(&resp); err != nil {
+			var response api.GenerateResponse
+			if err := json.NewDecoder(stream).Decode(&response); err != nil {
 				logger.Error(err)
 				break
 			}
 
-			logger.Info("Received response: ", resp.Response)
+			logger.Info("Received response: ", response.Response)
 
 		}
 
