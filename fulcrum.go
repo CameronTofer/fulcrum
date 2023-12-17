@@ -1,204 +1,146 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"flag"
 	"fmt"
-	"sync"
+	"time"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/libp2p/go-libp2p/core/host"
-	drouting "github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	dutil "github.com/libp2p/go-libp2p/p2p/discovery/util"
-
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	"github.com/multiformats/go-multiaddr"
-
-	"github.com/ipfs/go-log/v2"
-
-
-	"github.com/jmorganca/ollama/api"
+	"github.com/anacrolix/torrent"
+	"github.com/dustin/go-humanize"
+	"github.com/rivo/tview"
 )
 
-var logger = log.Logger("rendezvous")
-
-type generateOptions struct {
-	Model    string
-	Prompt   string
-	Format   string
-	Options  map[string]interface{}
+type TorrentProgress struct {
+	Name 		string
+	Size 		string
+	Status 		string
+	DownSpeed	string
+	UpSpeed		string
+	Seeds		string
+	Peers 		string
+	Completed 	string
 }
 
-func ConnectOllama( host host.Host, opts generateOptions ) {
+type TorrentManager struct {
+	tview.TableContentReadOnly
 
-	// create a client to the locally running ollama server
-	ollama, err := api.ClientFromEnvironment()
-	if err != nil {
-		panic(err)
+	table *tview.Table
+	torrents []TorrentProgress
+}
+
+func (d *TorrentManager) GetCell(row, column int) *tview.TableCell {
+
+	t := d.torrents[row]
+	switch column {
+	case 0:
+		return tview.NewTableCell(t.Name)
+	case 1:
+		return tview.NewTableCell(t.Status)
+	case 2:
+		return tview.NewTableCell(t.Size)
+	case 3:
+		return tview.NewTableCell(t.DownSpeed)
+	case 4:
+		return tview.NewTableCell(t.UpSpeed)
+	case 5:
+		return tview.NewTableCell(t.Seeds)
+	case 6:
+		return tview.NewTableCell(t.Peers)
+	case 7:
+		return tview.NewTableCell(t.Completed)
 	}
+	return nil
+}
 
-	cancelCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func (d *TorrentManager) GetRowCount() int {
+	return len(d.torrents)
+}
 
-	// pull the model even if it exists
-	pr := api.PullRequest{Name: opts.Model}
-	if err := ollama.Pull(context.Background(), &pr, func(resp api.ProgressResponse) error {
-		fmt.Println("pulling...", resp.Completed, resp.Total)
-		return nil
-	}); err != nil {
-		panic(err)
-	}
+func (d *TorrentManager) GetColumnCount() int {
+	return 8
+}
 
-	// Set a function as stream handler. This function is called when a peer
-	// initiates a connection and starts a stream with this peer.
-	host.SetStreamHandler(protocol.ID("ollama/" + opts.Model), func (stream network.Stream) {
-		logger.Info("!!! Got a new stream !!!")
-	
-		// get the prompt request from peer
-		var request api.GenerateRequest
-		if err := json.NewDecoder(stream).Decode(&request); err != nil {
-			logger.Error(err)
-			return
-		}
-	
-		logger.Info("Received request: ", request.Prompt)
+func (d *TorrentManager) Download(t *torrent.Torrent, update func()) {
 
-		// generate an answer
-		if err := ollama.Generate(cancelCtx, &request, func(response api.GenerateResponse) error {
-
-			if err := json.NewEncoder(stream).Encode(response); err != nil {
-				logger.Error(err)
-				panic(err)
-			}
-	
-			return nil
-
-		}); err != nil {
-			panic(err)
-		}
-	
+	d.torrents = append(d.torrents, TorrentProgress{
+		Name: t.Name(),
+		Size: humanize.Bytes(uint64(t.Length())),
 	})
-}
 
+	go func(index int) {
+		tp := &d.torrents[index]
+		if t.Info() == nil {
+			tp.Status = "Getting torrent info"
+			<-t.GotInfo()
+			t.DownloadAll()
+			tp.Name = t.Name()
+			tp.Status = "Downloading"
+		}
+		lastStats := t.Stats()
+		interval := 1 * time.Second
+		for range time.Tick(interval) {
+			stats := t.Stats()
+			byteRate := int64(time.Second)
+			byteRate *= stats.BytesReadUsefulData.Int64() - lastStats.BytesReadUsefulData.Int64()
+			byteRate /= int64(interval)
+			tp.DownSpeed = humanize.Bytes(uint64(byteRate)) + "/s"
+
+			byteRate = int64(time.Second)
+			byteRate *= stats.BytesWritten.Int64() - lastStats.BytesWritten.Int64()
+			byteRate /= int64(interval)
+			tp.UpSpeed = humanize.Bytes(uint64(byteRate)) + "/s"
+
+			tp.Size = humanize.Bytes(uint64(t.Length()))
+			tp.Seeds = fmt.Sprintf("%d", stats.ConnectedSeeders)
+			tp.Peers = fmt.Sprintf("%d", stats.TotalPeers)
+			tp.Completed = humanize.Bytes(uint64(t.BytesCompleted()))
+
+			lastStats = stats
+
+			update()
+		}
+	}(len(d.torrents)-1)
+}
 
 func main() {
-	//log.SetAllLoggers(log.LevelWarn)
-	log.SetLogLevel("rendezvous", "info")
-	help := flag.Bool("h", false, "Display Help")
-	config, err := ParseFlags()
-	if err != nil {
-		panic(err)
+
+	clientConfig := torrent.NewDefaultClientConfig()
+	client, _ := torrent.NewClient(clientConfig)
+	app := tview.NewApplication()
+
+	data := &TorrentManager{
+		torrents: []TorrentProgress{
+			TorrentProgress{
+				Name: "Name",
+				Status: "Status",
+				Size: "Size",
+				DownSpeed: "Down Speed",
+				UpSpeed: "Up Speed",
+				Seeds: "Seeds",
+				Peers: "Peers",
+				Completed: "Completed",
+			},
+		},
 	}
 
-	if *help {
-		fmt.Println("This program demonstrates a simple p2p chat application using libp2p")
-		fmt.Println()
-		fmt.Println("Usage: Run './chat in two different terminals. Let them connect to the bootstrap nodes, announce themselves and connect to the peers")
-		flag.PrintDefaults()
-		return
-	}
-
-	// libp2p.New constructs a new libp2p Host. Other options can be added
-	// here.
-	host, err := libp2p.New(libp2p.ListenAddrs([]multiaddr.Multiaddr(config.ListenAddresses)...))
-	if err != nil {
-		panic(err)
-	}
-	logger.Info("Host created. We are:", host.ID())
-	logger.Info(host.Addrs())
-
-	ConnectOllama(host, generateOptions{
-		Model: "orca2:13b",
-		Prompt: "What is it?",
-		Options: map[string]interface{}{},
+	t, _ := client.AddMagnet("magnet:?xt=urn:btih:28a399dc14f6ff3d37e975b072da4095fe7357e9&dn=archlinux-2023.12.01-x86_64.iso")
+	data.Download(t, func() {
+		app.Draw()
 	})
 
-	// Start a DHT, for use in peer discovery. We can't just make a new DHT
-	// client because we want each peer to maintain its own local copy of the
-	// DHT, so that the bootstrapping node of the DHT can go down without
-	// inhibiting future peer discovery.
-	ctx := context.Background()
-	kademliaDHT, err := dht.New(ctx, host)
-	if err != nil {
+	t, _ = client.AddMagnet("magnet:?xt=urn:btih:KRWPCX3SJUM4IMM4YF5RPHL6ANPYTQPU")
+	data.Download(t, func() {
+		app.Draw()
+	})
+
+
+	table := tview.NewTable().
+		SetBorders(true).
+		SetSelectable(true, true).
+		SetContent(data)
+
+	data.table = table
+
+	if err := app.SetRoot(table, true).EnableMouse(false).Run(); err != nil {
 		panic(err)
 	}
-
-	// Bootstrap the DHT. In the default configuration, this spawns a Background
-	// thread that will refresh the peer table every five minutes.
-	logger.Debug("Bootstrapping the DHT")
-	if err = kademliaDHT.Bootstrap(ctx); err != nil {
-		panic(err)
-	}
-
-	// Let's connect to the bootstrap nodes first. They will tell us about the
-	// other nodes in the network.
-	var wg sync.WaitGroup
-	for _, peerAddr := range config.BootstrapPeers {
-		peerinfo, _ := peer.AddrInfoFromP2pAddr(peerAddr)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := host.Connect(ctx, *peerinfo); err != nil {
-				logger.Warning(err)
-			} else {
-				logger.Info("Connection established with bootstrap node:", *peerinfo)
-			}
-		}()
-	}
-	wg.Wait()
-
-	// We use a rendezvous point "meet me here" to announce our location.
-	// This is like telling your friends to meet you at the Eiffel Tower.
-	logger.Info("Announcing ourselves...", config.RendezvousString)
-	routingDiscovery := drouting.NewRoutingDiscovery(kademliaDHT)
-	dutil.Advertise(ctx, routingDiscovery, config.RendezvousString)
-	logger.Debug("Successfully announced!")
-
-	// Now, look for others who have announced
-	// This is like your friend telling you the location to meet you.
-	logger.Debug("Searching for other peers...")
-	peerChan, err := routingDiscovery.FindPeers(ctx, config.RendezvousString)
-	if err != nil {
-		panic(err)
-	}
-
-	for peer := range peerChan {
-		if peer.ID == host.ID() {
-			continue
-		}
-		logger.Debug("Found peer:", peer)
-
-		logger.Debug("Connecting to:", peer)
-		stream, err := host.NewStream(ctx, peer.ID, protocol.ID(config.ProtocolID))
-
-		if err != nil {
-			//logger.Warning("Connection failed:", err)
-			continue
-		} else {
-
-			var request api.GenerateRequest
-			request.Prompt = "What is it?"
-			if err := json.NewEncoder(stream).Encode(request); err != nil {
-				logger.Error(err)
-				break
-			}
-
-			var response api.GenerateResponse
-			if err := json.NewDecoder(stream).Decode(&response); err != nil {
-				logger.Error(err)
-				break
-			}
-
-			logger.Info("Received response: ", response.Response)
-
-		}
-
-		logger.Info("Connected to:", peer)
-	}
-
-	select {}
 }
